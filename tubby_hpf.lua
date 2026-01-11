@@ -87,6 +87,7 @@ local function start_accel(direction) -- +1 up, -1 down
         redraw()
       end
     end
+    accel_task = nil
   end)
 end
 
@@ -137,6 +138,7 @@ function key(n, z)
   elseif n==3 then k3_down = (z==1) end
 
   if k2_down and k3_down then
+    stop_accel()
     if now - last_combo_time > 0.25 then
       last_combo_time = now
       toggle_bypass()
@@ -178,6 +180,9 @@ function init()
       local new_state = (v==2)
       if step_mode ~= new_state then
         step_mode = new_state
+        if not step_mode then
+          stop_accel()
+        end
         if step_mode then
           set_cutoff_from_idx(step_idx, false)
         else
