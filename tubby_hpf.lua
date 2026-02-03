@@ -18,7 +18,6 @@ local last_sweep_hz = STEPS[1]
 local k2_down, k3_down = false, false
 local accel_task = nil
 local hold_seconds = 0
-local ui_task = nil
 
 -- params
 local drive_db = 0     -- E2 mapped
@@ -229,12 +228,6 @@ function init()
   params:bang() -- push defaults to engine and UI
   redraw()      -- paint immediately before UI loop kicks in
 
-  ui_task = clock.run(function()
-    while true do
-      clock.sleep(1/15) -- keep UI snappy
-      redraw()
-    end
-  end)
 end
 
 -- drawing helpers ------------------------------------------------------------
@@ -316,8 +309,4 @@ end
 
 function cleanup()
   stop_accel()
-  if ui_task then
-    clock.cancel(ui_task)
-    ui_task = nil
-  end
 end

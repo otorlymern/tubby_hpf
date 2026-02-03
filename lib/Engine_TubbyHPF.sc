@@ -6,12 +6,13 @@ Engine_TubbyHPF : CroneEngine {
   alloc { |context, done|
     SynthDef(\tubby_hpf, { |inL, inR, out, cutoff=70, drive=0.0, outlevel=1.0, mode=0, bypass=0, stepclick=0|
       // declare ALL locals up front
-      var dry, sig, pre, rq_bump=0.55, rq_tub=0.85, click, lin, wet, outsig, drive_lin, bypass_x;
+      var dry, sig, pre, rq_bump=0.55, rq_tub=0.85, click, lin, wet, outsig, drive_lin, bypass_x, click_env;
 
       dry = [In.ar(inL), In.ar(inR)];
 
       // tiny transient on step changes; trigger on value changes
-      click = Decay2.ar(Changed.kr(stepclick), 0.0005, 0.005) * (WhiteNoise.ar * 0.004);
+      click_env = Decay2.kr(Changed.kr(stepclick), 0.0005, 0.005);
+      click = (WhiteNoise.ar * 0.004) * click_env;
 
       // input "console-ish" saturation: pre-gain into soft clip
       // drive in dB: -6..+24 mapped outside, clipped here for safety
