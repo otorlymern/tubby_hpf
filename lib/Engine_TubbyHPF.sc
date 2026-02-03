@@ -6,7 +6,7 @@ Engine_TubbyHPF : CroneEngine {
   alloc { |context, done|
     SynthDef(\tubby_hpf, { |inL, inR, out, cutoff=70, drive=0.0, outlevel=1.0, mode=0, bypass=0, stepclick=0|
       // declare ALL locals up front
-      var dry, sig, pre, rq_bump=0.55, rq_tub=0.85, click, lin, wet, outsig, drive_lin;
+      var dry, sig, pre, rq_bump=0.55, rq_tub=0.85, click, lin, wet, outsig, drive_lin, bypass_x;
 
       dry = [In.ar(inL), In.ar(inR)];
 
@@ -34,7 +34,9 @@ Engine_TubbyHPF : CroneEngine {
 
       // output stage
       wet = sig * outlevel;
-      outsig = (bypass > 0.5).if(dry * outlevel, wet); // bypass skips drive + filter
+      // UGen-safe bypass (crossfade): 0 = wet, 1 = dry
+      bypass_x = Lag.kr(bypass.clip(0, 1), 0.01);
+      outsig = SelectX.ar(bypass_x, [wet, dry * outlevel]);
       Out.ar(out, outsig);
     }).add;
 
