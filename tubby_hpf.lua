@@ -4,6 +4,7 @@
 engine.name = "TubbyHPF"
 
 local audio = require 'audio'
+local midi = require 'midi'
 
 -- Altec 9069B steps (Hz)
 local STEPS = {70,100,150,250,500,1000,2000,3000,5000,7500}
@@ -18,6 +19,23 @@ local last_sweep_hz = STEPS[1]
 local k2_down, k3_down = false, false
 local accel_task = nil
 local hold_seconds = 0
+local combo_latched = false
+
+-- midi / nanoKONTROL2
+local midi_in = nil
+local midi_gate = {}
+
+local NK2 = {
+  cutoff = 16,      -- knob 1
+  drive = 17,       -- knob 2
+  mode = 19,        -- knob 4
+  outlevel = 0,     -- slider 1
+  step_down = 32,   -- S1
+  step_up = 33,     -- S2
+  toggle_step = 48, -- M1
+  toggle_bypass = 49, -- M2
+  mode_cycle = 64   -- R1
+}
 
 -- params
 local drive_db = 0     -- E2 mapped
@@ -60,6 +78,82 @@ local function toggle_bypass()
   bypass = not bypass
   engine.bypass(bypass and 1 or 0)
   redraw()
+end
+
+local function cycle_mode(dir)
+  mode = (mode + dir) % 3
+  engine.mode(mode)
+  redraw()
+end
+
+local function set_step_mode(on)
+  step_mode = on
+  if step_mode then
+    set_cutoff_from_idx(step_idx, false)
+    params:set("step_mode", 2)
+  else
+    stop_accel()
+    params:set("step_mode", 1)
+    params:set("sweep_hz", STEPS[step_idx])
+  end
+  redraw()
+end
+
+local function set_hz_from_cc(v)
+  local hz = util.linexp(0, 127, 70, 7500, util.clamp(v, 0, 127))
+  if step_mode then
+    set_cutoff_from_idx(nearest_step_idx(hz), false)
+  else
+    params:set("sweep_hz", hz)
+  end
+  redraw()
+end
+
+local function button_pressed(cc, val)
+  local was_down = midi_gate[cc] == true
+  local is_down = val > 0
+  midi_gate[cc] = is_down
+  return is_down and not was_down
+end
+
+local function handle_midi_cc(cc, val)
+  if cc == NK2.cutoff then
+    set_hz_from_cc(val)
+  elseif cc == NK2.drive then
+    local db = util.linlin(0, 127, -6, 24, val)
+    params:set("drive_db", db)
+  elseif cc == NK2.outlevel then
+    local lvl = util.linlin(0, 127, 0, 2, val)
+    params:set("outlevel", lvl)
+  elseif cc == NK2.mode then
+    mode = util.clamp(math.floor(util.linlin(0, 127, 0, 2.99, val)), 0, 2)
+    engine.mode(mode)
+    redraw()
+  elseif cc == NK2.step_down and button_pressed(cc, val) then
+    set_cutoff_from_idx(step_idx - 1, true)
+    redraw()
+  elseif cc == NK2.step_up and button_pressed(cc, val) then
+    set_cutoff_from_idx(step_idx + 1, true)
+    redraw()
+  elseif cc == NK2.toggle_step and button_pressed(cc, val) then
+    set_step_mode(not step_mode)
+  elseif cc == NK2.toggle_bypass and button_pressed(cc, val) then
+    toggle_bypass()
+  elseif cc == NK2.mode_cycle and button_pressed(cc, val) then
+    cycle_mode(1)
+  end
+end
+
+local function set_midi_device(port)
+  midi_in = midi.connect(port)
+  if midi_in then
+    midi_in.event = function(data)
+      local msg = midi.to_msg(data)
+      if msg and msg.type == "cc" then
+        handle_midi_cc(msg.cc, msg.val)
+      end
+    end
+  end
 end
 
 -- long press acceleration with slight exponential growth
@@ -112,9 +206,7 @@ function enc(n, d)
     else
       -- when not sweeping, E1 changes bump mode
       if d ~= 0 then
-        mode = (mode + (d > 0 and 1 or -1)) % 3
-        engine.mode(mode)
-        redraw()
+        cycle_mode(d > 0 and 1 or -1)
       end
     end
   elseif n==2 then
@@ -129,27 +221,25 @@ end
 -- K2: step down (tap), hold for accel; with E1 sweeps
 -- K3: step up (tap), hold for accel
 -- K2+K3 together: toggle bypass (latch)
-local last_combo_time = 0
 function key(n, z)
   -- detect combo for bypass
-  local now = util.time()
   if n==2 then k2_down = (z==1)
   elseif n==3 then k3_down = (z==1) end
 
   if k2_down and k3_down then
     stop_accel()
-    if now - last_combo_time > 0.25 then
-      last_combo_time = now
+    if not combo_latched and z == 1 then
+      combo_latched = true
       toggle_bypass()
     end
     return
+  else
+    combo_latched = false
   end
 
   if n==1 and z==1 then
     -- cycle bump mode
-    mode = (mode + 1) % 3
-    engine.mode(mode)
-    redraw()
+    cycle_mode(1)
   end
 
   if step_mode then
@@ -166,6 +256,14 @@ function key(n, z)
       else
         stop_accel()
       end
+    end
+  else
+    if n==2 and z==1 then
+      local cur = params:get("sweep_hz")
+      params:set("sweep_hz", util.clamp(cur * math.pow(2, -1/24), 70, 7500))
+    elseif n==3 and z==1 then
+      local cur = params:get("sweep_hz")
+      params:set("sweep_hz", util.clamp(cur * math.pow(2, 1/24), 70, 7500))
     end
   end
 end
@@ -189,6 +287,12 @@ function init()
         end
       end
       redraw()
+    end
+  }
+
+  params:add{type="option", id="midi_in", name="MIDI In", options=midi.vports, default=1,
+    action=function(v)
+      set_midi_device(v)
     end
   }
 
@@ -231,6 +335,9 @@ function init()
 end
 
 -- drawing helpers ------------------------------------------------------------
+local ARC_START = -5 * math.pi / 6
+local ARC_END = 5 * math.pi / 6
+
 local function draw_big_knob(cx, cy, R)
   -- ring
   screen.level(bypass and 4 or 15)
@@ -240,18 +347,21 @@ local function draw_big_knob(cx, cy, R)
   -- notches + labels
   for i,f in ipairs(STEPS) do
     local t = (i-1)/(#STEPS-1)           -- 0..1 around arc
-    local ang = util.linlin(0,1, -5*math.pi/6, 11*math.pi/6, t) -- ~260° sweep
+    local ang = util.linlin(0,1, ARC_START, ARC_END, t)
     local x1 = cx + (R+2) * math.cos(ang)
     local y1 = cy + (R+2) * math.sin(ang)
     local x2 = cx + (R-2) * math.cos(ang)
     local y2 = cy + (R-2) * math.sin(ang)
     screen.level(i==step_idx and 15 or 5)
     screen.move(x1,y1); screen.line(x2,y2); screen.stroke()
-    -- tiny freq label
-    local lbl = (f>=1000) and (tostring(f/1000).."k") or tostring(f)
-    screen.level(i==step_idx and 15 or 5)
-    screen.move(cx + (R+10)*math.cos(ang), cy + (R+10)*math.sin(ang))
-    screen.text_center(lbl)
+    -- Keep labels sparse to avoid visual jumble on the 128x64 display.
+    local show_label = (i == 1 or i == 4 or i == 7 or i == #STEPS or i == step_idx)
+    if show_label then
+      local lbl = (f>=1000) and (tostring(f/1000).."k") or tostring(f)
+      screen.level(i==step_idx and 15 or 4)
+      screen.move(cx + (R+10)*math.cos(ang), cy + (R+10)*math.sin(ang))
+      screen.text_center(lbl)
+    end
   end
   -- pointer based on current step/sweep
   local t
@@ -260,7 +370,7 @@ local function draw_big_knob(cx, cy, R)
   else
     t = util.explin(70, 7500, 0, 1, last_sweep_hz)
   end
-  local ang = util.linlin(0,1, -5*math.pi/6, 11*math.pi/6, t)
+  local ang = util.linlin(0,1, ARC_START, ARC_END, t)
   local px = cx + (inner-2)*math.cos(ang)
   local py = cy + (inner-2)*math.sin(ang)
   screen.level(bypass and 4 or 15)
